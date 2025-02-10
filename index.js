@@ -1,5 +1,6 @@
+require('dotenv').config();
 const express = require('express');
-const mysql = require('mysql');
+const mysql = require('mysql2');
 const bodyParser = require('body-parser');
 const multer = require('multer');
 const path = require('path');
@@ -8,55 +9,62 @@ const app = express();
 // Middleware
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
+app.use('/uploads', express.static('uploads'));
 
 // Multer setup for file uploads
 const storage = multer.diskStorage({
-  destination: './uploads/',
-  filename: function (req, file, cb) {
-    cb(null, file.fieldname + '-' + Date.now() + path.extname(file.originalname));
-  }
+    destination: './uploads/',
+    filename: (req, file, cb) => {
+        cb(null, file.fieldname + '-' + Date.now() + path.extname(file.originalname));
+    }
 });
-const upload = multer({ storage: storage });
-
-// MySQL Connection Setup
-const db = mysql.createConnection({
-  host:process.env.host,
-  user:process.env.user,
-  password:process.env.password,  // Update to your MySQL password
-  database:process.env.database,
-});
-
-// Connect to the database
-db.connect(err => {
-  if (err) throw err;
-  console.log('MySQL connected...');
+const upload = multer({
+    storage: storage,
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = ['image/jpeg', 'image/png', 'application/pdf'];
+        if (allowedTypes.includes(file.mimetype)) {
+            cb(null, true);
+        } else {
+            cb(new Error('Invalid file type. Only JPEG, PNG, and PDF files are allowed.'));
+        }
+    }
 });
 
-// Serve static files (optional for file access later)
-app.use('/uploads', express.static('uploads'));
+// MySQL Connection Pooling
+const pool = mysql.createPool({
+    host: 'localhost',
+    user: 'root',
+    password: 'knls123', // Update to your MySQL password
+    database: 'anonymous_reports',
+    waitForConnections: true,5
+    connectionLimit: 10,
+    queueLimit: 0
+});
 
 // Handle form submission
 app.post('/submit-report', upload.single('attachment'), (req, res) => {
-  const { category, description } = req.body;
-  let attachment = null;
+    const { category, description } = req.body;
+    const attachment = req.file ? req.file.filename : null;
 
-  if (req.file) {
-    attachment = req.file.filename;
-  }
+    const sql = 'INSERT INTO reports (category, description, attachment) VALUES (?, ?, ?)';
+    pool.query(sql, [category, description, attachment], (err, result) => {
+        if (err) {
+            console.error('Database error:', err);
+            return res.status(500).json({ success: false, message: 'Error submitting report', error: err.message });
+        }
+        res.status(200).json({ success: true, message: 'Report submitted successfully', data: { reportId: result.insertId } });
+    });
+});
 
-  // Insert data into MySQL database
-  const sql = 'INSERT INTO reports (category, description, attachment) VALUES (?, ?, ?)';
-  db.query(sql, [category, description, attachment], (err, result) => {
-    if (err) {
-      console.error(err);
-      return res.status(500).json({ message: 'Error submitting report' });
-    }
-    res.json({ message: 'Report submitted successfully' });
-  });
+// Serve index.html
+app.get('/', (req, res) => {
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Start server
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
+    console.log(`Server is running on port ${PORT}`);
 });
